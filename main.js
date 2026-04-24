@@ -1,133 +1,98 @@
-const {Plugin,Notice,PluginSettingTab,Setting,requestUrl,MarkdownView}=require('obsidian');
-const VERSION='0.1.0';
-const DEFAULT_SETTINGS={targetLang:'vi',sourceLang:'auto',outputMode:'new-file',chunkSize:3200,delayMs:180,showNotices:true};
-module.exports=class GoogleTransObsidianPlugin extends Plugin{
+const {Plugin,Notice,PluginSettingTab,Setting,requestUrl,MarkdownView,Modal}=require('obsidian');
+const V='0.2.0';
+const DEF={targetLang:'vi',sourceLang:'auto',outputMode:'new-file',chunkSize:2500,delayMs:250,maxNoteChars:60000,maxRetries:3,retryBaseMs:800,showNotices:true};
+module.exports=class GT extends Plugin{
 async onload(){
-this.settings=Object.assign({},DEFAULT_SETTINGS,await this.loadData());
-this.addRibbonIcon('languages','Translate current note',async()=>{await this.translateActiveNote(this.settings.outputMode);});
-this.addCommand({id:'translate-current-note',name:'Translate current note',callback:async()=>{await this.translateActiveNote(this.settings.outputMode);}});
-this.addCommand({id:'translate-current-note-to-new-file',name:'Translate current note to new file',callback:async()=>{await this.translateActiveNote('new-file');}});
-this.addCommand({id:'replace-current-note-with-translation',name:'Replace current note with translation',callback:async()=>{await this.translateActiveNote('replace');}});
-this.addCommand({id:'append-translation-below-current-note',name:'Append translation below current note',callback:async()=>{await this.translateActiveNote('append');}});
-this.addSettingTab(new GoogleTransSettingTab(this.app,this));
-new Notice('Google Trans Obsidian v'+VERSION+' loaded');
+this.settings=Object.assign({},DEF,await this.loadData());this.logs=[];this.bar=this.addStatusBarItem();this.status('GT v'+V);
+this.addRibbonIcon('languages','Translate current note',()=>this.run(this.settings.outputMode));
+for(const c of [['translate-current-note','Translate current note',this.settings.outputMode],['translate-current-note-new-file','Translate current note to new file','new-file'],['translate-current-note-replace','Replace current note with translation','replace'],['translate-current-note-append','Append translation below current note','append']])this.addCommand({id:c[0],name:c[1],callback:()=>this.run(c[2])});
+this.addCommand({id:'show-translation-log',name:'Show translation log',callback:()=>new LogModal(this.app,this.logs).open()});
+this.addSettingTab(new Tab(this.app,this));new Notice('Google Trans Obsidian v'+V+' loaded');
 }
-async saveSettings(){await this.saveData(this.settings);}
-notice(msg){if(this.settings.showNotices)new Notice(msg,3500);}
-async translateActiveNote(mode){
-const view=this.app.workspace.getActiveViewOfType(MarkdownView);
-const file=this.app.workspace.getActiveFile();
-if(!view||!file){new Notice('No active Markdown note found.');return;}
-const editor=view.editor;
-const original=editor.getValue();
-if(!original.trim()){new Notice('Current note is empty.');return;}
+async saveSettings(){await this.saveData(this.settings)}
+status(s){if(this.bar)this.bar.setText(s)}
+say(s,ms=3000){if(this.settings.showNotices)new Notice(s,ms)}
+log(s){const x='['+new Date().toLocaleTimeString()+'] '+s;this.logs.push(x);if(this.logs.length>300)this.logs.shift();console.log('[GTO]',s)}
+async run(mode){
+const view=this.app.workspace.getActiveViewOfType(MarkdownView),file=this.app.workspace.getActiveFile();
+if(!view||!file){new Notice('No active note.');return}
+const src=view.editor.getValue();
+if(!src.trim()){new Notice('Current note is empty.');return}
+if(this.settings.maxNoteChars>0&&src.length>this.settings.maxNoteChars){new Notice('Note too long: '+src.length+' chars. Limit '+this.settings.maxNoteChars+'.',9000);this.status('GT blocked');return}
+this.logs=[];this.log('file '+file.path);this.say('Translating note...');this.status('GT running');
 try{
-this.notice('Translating note...');
-const translated=await this.translateMarkdown(original);
-if(mode==='replace'){editor.setValue(translated);new Notice('Translated and replaced current note.');return;}
-if(mode==='append'){editor.setValue(original+String.fromCharCode(10)+String.fromCharCode(10)+'---'+String.fromCharCode(10)+String.fromCharCode(10)+'# Translation ('+this.settings.targetLang+')'+String.fromCharCode(10)+String.fromCharCode(10)+translated);new Notice('Translation appended.');return;}
-const path=await this.createTranslatedFile(file,translated);
-await this.app.workspace.openLinkText(path,'',true);
-new Notice('Translated note created: '+path);
-}catch(e){console.error(e);new Notice('Translate failed: '+(e&&e.message?e.message:String(e)),8000);}
+const out=await this.translateDoc(src);
+if(mode==='replace'){view.editor.setValue(out);this.status('GT done');new Notice('Translated and replaced current note.');return}
+if(mode==='append'){view.editor.setValue(src+'\n\n---\n\n# Translation ('+this.settings.targetLang+')\n\n'+out);this.status('GT done');new Notice('Translation appended.');return}
+const p=await this.newFile(file,out);await this.app.workspace.openLinkText(p,'',true);this.status('GT done');new Notice('Translated note created: '+p)
+}catch(e){const m=e&&e.message?e.message:String(e);this.log('ERROR '+m);this.status('GT failed');new Notice('Translate failed: '+m,9000)}
 }
-async createTranslatedFile(file,translated){
-const folder=file.parent&&file.parent.path&&file.parent.path!=='/'?file.parent.path:'';
-const base=file.basename||file.name.replace('.md','');
-const lang=this.settings.targetLang||'vi';
-let name=base+'.'+lang+'.md';
-let path=folder?folder+'/'+name:name;
-let i=2;
-while(await this.app.vault.adapter.exists(path)){name=base+'.'+lang+'.'+i+'.md';path=folder?folder+'/'+name:name;i++;}
-await this.app.vault.create(path,translated);
-return path;
+async newFile(file,text){
+const folder=file.parent&&file.parent.path&&file.parent.path!=='/'?file.parent.path:'',base=file.basename||file.name.replace('.md',''),lang=this.settings.targetLang||'vi';
+let name=base+'.'+lang+'.md',path=folder?folder+'/'+name:name,n=2;
+while(await this.app.vault.adapter.exists(path)){name=base+'.'+lang+'.'+n+'.md';path=folder?folder+'/'+name:name;n++}
+await this.app.vault.create(path,text);return path
 }
-async translateMarkdown(markdown){
-const blocks=splitMarkdown(markdown);
-const output=[];
-for(let i=0;i<blocks.length;i++){
-const b=blocks[i];
-if(b.protected||!b.text.trim()){output.push(b.text);continue;}
-output.push(await this.translateText(b.text));
+async translateDoc(src){
+const segs=segments(src),todo=segs.filter(x=>!x.keep&&x.text.trim());let done=0,out=[];
+this.log('segments '+segs.length+', translatable '+todo.length);
+for(const s of segs){if(s.keep||!s.text.trim()){out.push(s.text);continue}
+done++;this.status('GT '+done+'/'+todo.length+' '+Math.round(done/(todo.length||1)*100)+'%');
+out.push(await this.translateText(s.text,done,todo.length))}
+return out.join('')
 }
-return output.join(String.fromCharCode(10));
+async translateText(text,idx,total){
+const lines=text.split('\n'),out=[];
+for(let i=0;i<lines.length;i++)out.push(await this.translateLine(lines[i],idx,total,i+1,lines.length));
+return out.join('\n')
 }
-async translateText(text){
-const chunks=splitChunks(text,Number(this.settings.chunkSize)||3200);
-const out=[];
-for(let i=0;i<chunks.length;i++){
-const c=chunks[i];
-if(!c.trim()){out.push(c);continue;}
-this.notice('Translating chunk '+(i+1)+'/'+chunks.length+'...');
-out.push(await this.translateChunk(c));
-await sleep(Number(this.settings.delayMs)||0);
+async translateLine(line,idx,total,li,lt){
+if(!line.trim()||tableDivider(line))return line;
+const p=prefix(line),guard=protect(p.body),chunks=cut(guard.text,this.settings.chunkSize),out=[];
+for(let i=0;i<chunks.length;i++){if(!chunks[i].trim()){out.push(chunks[i]);continue}
+this.log('seg '+idx+'/'+total+' line '+li+'/'+lt+' chunk '+(i+1)+'/'+chunks.length);
+out.push(await this.reqRetry(chunks[i]));await sleep(this.settings.delayMs)}
+return p.pre+restore(out.join(''),guard.items)+p.post
 }
-return out.join('');
+async reqRetry(q){let err=null;
+for(let i=0;i<=this.settings.maxRetries;i++){try{if(i){const w=this.settings.retryBaseMs*Math.pow(2,i-1);this.status('GT retry '+i);this.log('retry '+i+' wait '+w);await sleep(w)}return await this.req(q)}catch(e){err=e;this.log('request fail '+(i+1)+': '+(e.message||e))}}
+throw err||new Error('request failed')
 }
-async translateChunk(text){
-const q=text.trim();
-if(!q)return text;
-const params=new URLSearchParams({client:'gtx',sl:this.settings.sourceLang||'auto',tl:this.settings.targetLang||'vi',dt:'t',q:q});
-const url='https://translate.googleapis.com/translate_a/single?'+params.toString();
-const res=await requestUrl({url:url,method:'GET',headers:{Accept:'application/json,text/plain,*/*'},throw:false});
-if(res.status<200||res.status>=300)throw new Error('Google Translate HTTP '+res.status);
-let data=res.json;
-if(!data){try{data=JSON.parse(res.text);}catch(e){throw new Error('Cannot parse Google Translate response.');}}
-if(!Array.isArray(data)||!Array.isArray(data[0]))throw new Error('Unexpected Google Translate response.');
-return data[0].map(p=>Array.isArray(p)&&typeof p[0]==='string'?p[0]:'').join('');
+async req(q){
+const t=q.trim();if(!t)return q;
+const lead=(q.match(/^\s*/)||[''])[0],tail=(q.match(/\s*$/)||[''])[0];
+const u='https://translate.googleapis.com/translate_a/single?'+new URLSearchParams({client:'gtx',sl:this.settings.sourceLang,tl:this.settings.targetLang,dt:'t',q:t}).toString();
+const r=await requestUrl({url:u,method:'GET',throw:false});
+if(r.status<200||r.status>=300)throw new Error('HTTP '+r.status);
+const j=r.json||JSON.parse(r.text);
+return lead+j[0].map(x=>x[0]||'').join('')+tail
 }
 };
-class GoogleTransSettingTab extends PluginSettingTab{
-constructor(app,plugin){super(app,plugin);this.plugin=plugin;}
-display(){
-const c=this.containerEl;c.empty();
-c.createEl('h2',{text:'Google Trans Obsidian'});
-c.createEl('p',{text:'UI version: '+VERSION});
-c.createEl('p',{text:'Uses Google Translate web endpoint. No API key. Best for personal notes, not heavy batch translation.'});
-new Setting(c).setName('Target language').setDesc('Vietnamese = vi, English = en, Japanese = ja, Chinese = zh-CN, Korean = ko.').addText(t=>t.setPlaceholder('vi').setValue(this.plugin.settings.targetLang).onChange(async v=>{this.plugin.settings.targetLang=v.trim()||'vi';await this.plugin.saveSettings();}));
-new Setting(c).setName('Source language').setDesc('Use auto unless you need fixed source language.').addText(t=>t.setPlaceholder('auto').setValue(this.plugin.settings.sourceLang).onChange(async v=>{this.plugin.settings.sourceLang=v.trim()||'auto';await this.plugin.saveSettings();}));
-new Setting(c).setName('Default output mode').setDesc('new-file is safest. replace overwrites current note. append adds translation below.').addDropdown(d=>d.addOption('new-file','Create new translated file').addOption('replace','Replace current note').addOption('append','Append below current note').setValue(this.plugin.settings.outputMode).onChange(async v=>{this.plugin.settings.outputMode=v;await this.plugin.saveSettings();}));
-new Setting(c).setName('Chunk size').setDesc('Lower is safer. Higher is faster but can fail.').addText(t=>t.setPlaceholder('3200').setValue(String(this.plugin.settings.chunkSize)).onChange(async v=>{const n=Number(v);this.plugin.settings.chunkSize=Number.isFinite(n)&&n>=500?n:3200;await this.plugin.saveSettings();}));
-new Setting(c).setName('Delay between chunks').setDesc('Milliseconds. Increase if requests fail.').addText(t=>t.setPlaceholder('180').setValue(String(this.plugin.settings.delayMs)).onChange(async v=>{const n=Number(v);this.plugin.settings.delayMs=Number.isFinite(n)&&n>=0?n:180;await this.plugin.saveSettings();}));
-new Setting(c).setName('Show progress notices').setDesc('Turn off if notices are annoying.').addToggle(t=>t.setValue(Boolean(this.plugin.settings.showNotices)).onChange(async v=>{this.plugin.settings.showNotices=v;await this.plugin.saveSettings();}));
-}
-}
-function splitMarkdown(text){
-const NL=String.fromCharCode(10);
-const lines=text.split(NL);
-const blocks=[];
-let buf=[];
-let fence=false;
-let fm=false;
-function push(protectedBlock){if(buf.length){blocks.push({protected:protectedBlock,text:buf.join(NL)});buf=[];}}
-for(let i=0;i<lines.length;i++){
-const line=lines[i];
-const trim=line.trim();
-if(i===0&&trim==='---'){push(false);fm=true;buf.push(line);continue;}
-if(fm){buf.push(line);if(i>0&&trim==='---'){push(true);fm=false;}continue;}
-if(trim.startsWith('```')||trim.startsWith('~~~')){
-if(!fence){push(false);fence=true;buf.push(line);}else{buf.push(line);push(true);fence=false;}
-continue;
-}
-if(fence){buf.push(line);continue;}
-buf.push(line);
-}
-if(buf.length)push(fence||fm);
-return blocks;
-}
-function splitChunks(text,max){
-const NL=String.fromCharCode(10);
-const chunks=[];
-let i=0;
-while(i<text.length){
-let end=Math.min(i+max,text.length);
-if(end<text.length){
-const cut=text.lastIndexOf(NL,end);
-if(cut>i+500)end=cut+1;
-}
-chunks.push(text.slice(i,end));
-i=end;
-}
-return chunks;
-}
-function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
+class LogModal extends Modal{constructor(app,logs){super(app);this.logs=logs}onOpen(){this.contentEl.empty();this.contentEl.createEl('h2',{text:'Translation log'});this.contentEl.createEl('p',{text:'UI version: '+V});this.contentEl.createEl('pre',{text:this.logs.length?this.logs.join('\n'):'No logs yet.'})}}
+class Tab extends PluginSettingTab{constructor(app,p){super(app,p);this.p=p}display(){const c=this.containerEl;c.empty();c.createEl('h2',{text:'Google Trans Obsidian'});c.createEl('p',{text:'UI version: '+V});c.createEl('p',{text:'Uses Google Translate web endpoint. Do not use for sensitive notes.'});
+txt(c,this.p,'targetLang','Target language','vi / en / ja / zh-CN / ko','vi');
+txt(c,this.p,'sourceLang','Source language','auto is recommended','auto');
+new Setting(c).setName('Default output mode').setDesc('new-file is safest.').addDropdown(d=>d.addOption('new-file','Create new file').addOption('replace','Replace current note').addOption('append','Append below').setValue(this.p.settings.outputMode).onChange(async v=>{this.p.settings.outputMode=v;await this.p.saveSettings()}));
+txt(c,this.p,'chunkSize','Chunk size','Lower is safer','2500',500);
+txt(c,this.p,'maxNoteChars','Max note characters','0 disables limit','60000',0);
+txt(c,this.p,'maxRetries','Max retries','Retry failed request','3',0);
+txt(c,this.p,'retryBaseMs','Retry base delay ms','Backoff delay','800',0);
+txt(c,this.p,'delayMs','Delay between chunks ms','Increase if rate limited','250',0);
+new Setting(c).setName('Show notices').addToggle(t=>t.setValue(!!this.p.settings.showNotices).onChange(async v=>{this.p.settings.showNotices=v;await this.p.saveSettings()}))
+}}
+function txt(c,p,k,n,d,ph,min){new Setting(c).setName(n).setDesc(d).addText(t=>t.setPlaceholder(ph).setValue(String(p.settings[k])).onChange(async v=>{const num=Number(v);p.settings[k]=min===undefined?(v.trim()||ph):(Number.isFinite(num)&&num>=min?num:Number(ph));await p.saveSettings()}))}
+function segments(src){const lines=src.split('\n'),a=[];let b=[],keep=false,fence='',fm=false,math=false;const push=k=>{if(b.length){a.push({keep:k,text:b.join('\n')+'\n'});b=[]}};
+for(let i=0;i<lines.length;i++){const x=lines[i],t=x.trim();
+if(i===0&&t==='---'){push(false);fm=true;keep=true;b.push(x);continue}
+if(fm){b.push(x);if(i&&t==='---'){push(true);fm=false;keep=false}continue}
+if(!keep&&(t.startsWith('```')||t.startsWith('~~~'))){push(false);keep=true;fence=t.slice(0,3);b.push(x);continue}
+if(keep&&fence&&t.startsWith(fence)){b.push(x);push(true);keep=false;fence='';continue}
+if(!keep&&t==='$$'){push(false);keep=true;math=true;b.push(x);continue}
+if(keep&&math&&t==='$$'){b.push(x);push(true);keep=false;math=false;continue}
+b.push(x)}if(b.length)a.push({keep,text:b.join('\n')});return a}
+function prefix(line){const ps=[/^(\s{0,3}#{1,6}\s+)(.*)$/,/^(\s*>\s?)(.*)$/,/^(\s*[-*+]\s+)(.*)$/,/^(\s*\d+[.)]\s+)(.*)$/,/^(\s*\|)(.*)(\|\s*)$/];for(const r of ps){const m=line.match(r);if(m)return{pre:m[1],body:m[2],post:m[3]||''}}return{pre:'',body:line,post:''}}
+function protect(s){const items=[];const save=v=>{const k='ZZGTO'+items.length+'ZZ';items.push([k,v]);return k};let x=s;x=x.replace(/`[^`\n]*`/g,save);x=x.replace(/\$[^$\n]+\$/g,save);x=x.replace(/!?\[\[[^\]]+\]\]/g,save);x=x.replace(/!?\[[^\]]*\]\([^)]+\)/g,save);x=x.replace(/https?:\/\/[^\s)\]]+/g,save);x=x.replace(/#[A-Za-z0-9_\/-]+/g,save);x=x.replace(/<[^>]+>/g,save);return{text:x,items}}
+function restore(s,items){let x=s;for(const it of items){x=x.split(it[0]).join(it[1]);x=x.split(it[0].toLowerCase()).join(it[1])}return x}
+function tableDivider(s){return /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(s.trim())}
+function cut(s,max){const a=[];let i=0;while(i<s.length){let e=Math.min(i+Number(max||2500),s.length);if(e<s.length){const n=s.lastIndexOf('\n',e);if(n>i+300)e=n+1}a.push(s.slice(i,e));i=e}return a}
+function sleep(ms){return new Promise(r=>setTimeout(r,Number(ms)||0))}
