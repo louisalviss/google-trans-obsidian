@@ -1,0 +1,30 @@
+name: Release Obsidian Plugin
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create or update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.1.0
+          name: v0.1.0
+          body: Initial Obsidian mobile translator plugin.
+          files: |
+            manifest.json
+            main.js
+            versions.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
