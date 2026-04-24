@@ -19,9 +19,18 @@ jobs:
       - name: Create or update release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.1.0
-          name: v0.1.0
-          body: Initial Obsidian mobile translator plugin.
+          tag_name: v0.2.0
+          name: v0.2.0
+          body: |
+            Google Trans Obsidian v0.2.0
+
+            Changes:
+            - Better Markdown protection
+            - Retry with exponential backoff
+            - Clear translation logs
+            - Status bar progress
+            - Max note length guard
+            - Release assets for BRAT/mobile install
           files: |
             manifest.json
             main.js
