@@ -1,9 +1,9 @@
 {
   "id": "google-trans-obsidian",
   "name": "Google Trans Obsidian",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "minAppVersion": "1.5.0",
-  "description": "One-click translate the current Obsidian note using Google Translate web endpoint with markdown protection, retry, progress, and logs.",
+  "description": "One-click translate the current Obsidian note using Google Translate web endpoint with visible loading overlay, faster chunk translation, retry, logs, and markdown protection.",
   "author": "Louis / ChatGPT",
   "authorUrl": "",
   "isDesktopOnly": false
